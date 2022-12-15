@@ -43,14 +43,15 @@ class Account extends Struct({
   token: UInt64,
   isActivated: Bool,
 }) {
-  constructor(publicKey: PublicKey) {
+  constructor(publicKey: PublicKey, token?: UInt64, isActivated?: Bool) {
     super({
       publicKey,
-      token: initialAccountBalance,
-      isActivated: Bool.not(true),
+      token: token || initialAccountBalance,
+      isActivated: isActivated || Bool.not(true),
     });
-    this.token = initialAccountBalance;
     this.publicKey = publicKey;
+    this.token = token || initialAccountBalance;
+    this.isActivated = isActivated || Bool.not(true);
   }
 
   hash(): Field {
@@ -61,9 +62,14 @@ class Account extends Struct({
     );
   }
   activate(): Account {
-    // this.isActivated.assertFalse();
-    this.isActivated = Bool.not(false);
-    return this;
+    // console.log("[account] activate()");
+    if (this.isActivated.toBoolean()) {
+      console.log('account is already activated.');
+      return this;
+    }
+    // return new one.
+    // console.log('[account] activating new account...');
+    return new Account(this.publicKey, this.token, Bool.not(false));
   }
   balance(): bigint {
     this.isActivated.assertEquals(true);
@@ -72,14 +78,16 @@ class Account extends Struct({
   balance_increment(value: number): Account {
     this.isActivated.assertEquals(true);
     this.token.add(value);
-    return this;
+    // return new account instance with updated value
+    return new Account(this.publicKey, this.token.add(value), this.isActivated);
   }
   balance_decrement(value: number): Account {
     this.isActivated.assertEquals(true);
     // ensure amount > decreasing value
     this.token.assertGte(UInt64.from(value), 'Balance is not enough.');
     this.token.sub(value);
-    return this;
+    // return new account instance with updated value
+    return new Account(this.publicKey, this.token.sub(value), this.isActivated);
   }
 }
 
@@ -100,19 +108,17 @@ class Ledger extends SmartContract {
   }
 
   @method updateProofs(commitment: Field) {
+    // console.log('[Ledger] updateProofs()');
     // fetch commitment
-    let lastCommitment = this.commitment.get();
-    this.commitment.assertEquals(lastCommitment);
+    let lastest = this.commitment.get();
+    this.commitment.assertEquals(lastest);
 
     // update new commitment
     this.commitment.set(commitment);
   }
 
-  @method activateAccount(
-    account: Account,
-    root: Field,
-    witness: MyMerkleWitness
-  ) {
+  @method activate(account: Account, root: Field, witness: MyMerkleWitness) {
+    // console.log('[Ledger] activateAccount()');
     // fetch commitment
     let commitment = this.commitment.get();
     this.commitment.assertEquals(commitment);
@@ -121,9 +127,8 @@ class Ledger extends SmartContract {
       commitment,
       'Failed to activate account due to unmatched root.'
     );
-
+    // activate account :
     let updatedAccount = account.activate();
-
     let newCommitment = witness.calculateRoot(updatedAccount.hash());
 
     this.commitment.set(newCommitment);
@@ -155,7 +160,7 @@ Accounts.set('Alice', alice);
 Accounts.set('Olivia', olivia);
 Accounts.set('Charlie', charlie);
 
-// Wrap Merkle Tree around off-chain map
+// Merkle Tree -> Root -> Commitment proofs
 const Tree = new MerkleTree(8);
 Tree.setLeaf(0n, bob.hash());
 Tree.setLeaf(1n, alice.hash());
@@ -195,11 +200,12 @@ await tx_initProofs.send();
 console.log('[Ledger] updated latest proofs.');
 console.log('root: %s\n', zkLedger.commitment.get().toString());
 
-async function activate(name: Names, index: bigint) {
+async function activateAccount(name: Names, index: bigint) {
   // Test activate ()
-  const is_activated = Accounts.get(name)?.isActivated;
-  console.log('\n%s account is activated: ', name, is_activated?.toBoolean());
-  is_activated?.assertFalse();
+  const is_activated = Accounts.get(name)?.isActivated.toBoolean();
+  console.log('\n%s account is activated: ', name, is_activated);
+
+  if (is_activated) return;
 
   const account = Accounts.get(name)!;
   const w = Tree.getWitness(index);
@@ -208,7 +214,7 @@ async function activate(name: Names, index: bigint) {
   console.log('root: %s', root);
 
   const tx = await Mina.transaction(feePayer, () => {
-    zkLedger.activateAccount(account, root, witness);
+    zkLedger.activate(account, root, witness);
     // if no proofs then sign & send
     if (!doProofs) zkLedger.sign(zkAppPrivatekey);
   });
@@ -222,20 +228,28 @@ async function activate(name: Names, index: bigint) {
 
   // update to off-chain ledger
   const updatedAccount = account.activate();
+  // update our map
+  Accounts.set(name, updatedAccount);
+  // update our tree wrap
   Tree.setLeaf(index, updatedAccount.hash());
-  latestCommit.assertEquals(Tree.getRoot());
+  // check if it matched our latest commitment
+  latestCommit.assertEquals(
+    Tree.getRoot(),
+    '[activateAccount] unmatched root after activated new account.'
+  );
+  // log
   console.log(
     '%s account is activated: ',
     name,
-    account.isActivated.toBoolean()
+    updatedAccount.isActivated.toBoolean()
   );
-  // console.log("updated off-chain ledger.");
 }
 
 // Try Bob
-await activate('Bob', 0n);
-await activate('Alice', 1n);
-await activate('Olivia', 2n);
-await activate('Charlie', 3n);
+await activateAccount('Bob', 0n);
+await activateAccount('Bob', 0n);
+// await activateAccount('Alice', 1n);
+// await activateAccount('Olivia', 2n);
+// await activateAccount('Charlie', 3n);
 
 await shutdown();
