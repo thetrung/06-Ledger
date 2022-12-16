@@ -14,7 +14,11 @@ import {
   shutdown,
   PrivateKey,
   AccountUpdate,
+  Field,
+  CircuitString,
 } from 'snarkyjs';
+
+import { generate_mnemonic } from 'tezallet';
 
 await isReady;
 console.log('SnarkyJS loaded.');
@@ -62,8 +66,8 @@ Tree.setLeaf(3n, charlie.hash());
 // get commitment for smart contract
 const initialOffChainProofs = Tree.getRoot();
 console.log(
-  'initial off-chain ledger proofs :\n%s\n',
-  initialOffChainProofs.toString()
+  'initial off-chain proofs :\n%s\n',
+  initialOffChainProofs.toString().slice(0, 16)
 );
 
 let zkLedger = new Ledger(zkAppAddress);
@@ -90,57 +94,158 @@ const tx_initProofs = await Mina.transaction(feePayer, () => {
 if (doProofs) await tx_initProofs.prove();
 await tx_initProofs.send();
 console.log('[Ledger] updated latest proofs.');
-console.log('root: %s\n', zkLedger.commitment.get().toString());
+console.log('root: %s\n', zkLedger.commitment.get().toString().slice(0, 16));
 
-async function activateAccount(name: Names, index: bigint) {
+async function updateOffChainAccount(
+  name: string,
+  updatedAccount: Account,
+  index: bigint,
+  funcName: string
+) {
+  // fetch latest :
+  const latestCommit = zkLedger.commitment.get();
+  console.log('proofs: %s', latestCommit.toString().slice(0, 16));
+
+  // update to off-chain ledger
+  const updatedAccountHash = updatedAccount.hash();
+  Accounts.set(name, updatedAccount); // Map
+  Tree.setLeaf(index, updatedAccountHash); // MerkleTree
+  // verify off-chain commitment :
+  latestCommit.assertEquals(
+    Tree.getRoot(),
+    funcName + ' unmatched root after activated new account.'
+  );
+}
+
+async function activateAccount(
+  name: Names,
+  index: bigint,
+  password: string
+): Promise<Field> {
   // Test activate ()
   const is_activated = Accounts.get(name)?.isActivated.toBoolean();
   console.log('\n%s account is activated: ', name, is_activated);
 
-  if (is_activated) return;
-
+  if (is_activated) return Field(0);
+  // fetch account
   const account = Accounts.get(name)!;
-  const w = Tree.getWitness(index);
-  const witness = new NthMerkleWitness(w);
+  // witness & root
+  const witness = new NthMerkleWitness(Tree.getWitness(index));
   const root = witness.calculateRoot(account.hash());
   console.log('root: %s', root.toString().slice(0, 16));
-
+  // password
+  const fieldPassword = CircuitString.fromString(password);
+  // TX: activate()
   const tx = await Mina.transaction(feePayer, () => {
-    zkLedger.activate(account, root, witness);
-    // if no proofs then sign & send
+    zkLedger.activate(account, root, witness, fieldPassword);
     if (!doProofs) zkLedger.sign(zkAppPrivatekey);
   });
-  // if do proofs then prove tx before sending :
   if (doProofs) await tx.prove();
   await tx.send();
-  // fetch latest :
-  const latestCommit = zkLedger.commitment.get();
-  // logs :
-  console.log('proofs: %s', latestCommit.toString().slice(0, 16));
-
   // update to off-chain ledger
-  const updatedAccount = account.activate();
-  // update our map
-  Accounts.set(name, updatedAccount);
-  // update our tree wrap
-  Tree.setLeaf(index, updatedAccount.hash());
-  // check if it matched our latest commitment
-  latestCommit.assertEquals(
-    Tree.getRoot(),
-    '[activateAccount] unmatched root after activated new account.'
-  );
+  const updatedAccount = account.activate(fieldPassword);
+  updateOffChainAccount(name, updatedAccount, index, 'activateAccount');
+
   // log
   console.log(
     '%s account is activated: ',
     name,
     updatedAccount.isActivated.toBoolean()
   );
+
+  return updatedAccount.hash();
 }
 
 // Try Bob
-await activateAccount('Bob', 0n);
-await activateAccount('Alice', 1n);
-await activateAccount('Olivia', 2n);
-await activateAccount('Charlie', 3n);
+var bob_proofs = await activateAccount('Bob', 0n, 'password123');
+// await activateAccount('Alice', 1n, 'password')
+// await activateAccount('Olivia', 2n, 'password')
+// await activateAccount('Charlie', 3n, 'password')
 
+async function setKey(
+  name: Names,
+  index: bigint,
+  proofs: Field,
+  password: string,
+  newKey: string
+): Promise<Field> {
+  // start !
+  console.log('\n[setKey] init for %s', name);
+  // get account
+  const account = Accounts.get(name)!;
+  console.log('old key: %s', account.mnemonic.toString().slice(0, 16));
+  // is_activated?
+  const is_activated = account.isActivated.toBoolean();
+  if (!is_activated) {
+    console.log(
+      '\n[setKey] %s account is (not) activated :',
+      name,
+      is_activated
+    );
+    return Field(0);
+  }
+  // witness & root
+  const witness = new NthMerkleWitness(Tree.getWitness(index));
+  const root = witness.calculateRoot(account.hash());
+  console.log('root: %s', root.toString().slice(0, 16));
+  const fieldPassword = CircuitString.fromString(password);
+  const fieldNewKey = CircuitString.fromString(newKey);
+  // TX: setKey
+  const tx = await Mina.transaction(feePayer, () => {
+    zkLedger.setKey(account, root, witness, proofs, fieldPassword, fieldNewKey);
+    if (!doProofs) zkLedger.sign(zkAppPrivatekey);
+  });
+  if (doProofs) await tx.prove();
+  await tx.send();
+  // update to off-chain instance
+  const updatedAccount = account.setKey(fieldNewKey, fieldPassword, proofs);
+  updateOffChainAccount(name, updatedAccount, index, 'setKey');
+  // log hash
+  console.log('new key: %s', updatedAccount.mnemonic.toString().slice(0, 16));
+  // return for testing
+  return updatedAccount.hash();
+}
+
+const sample_mnemonic = generate_mnemonic();
+bob_proofs = await setKey(
+  'Bob',
+  0n,
+  bob_proofs,
+  'password123',
+  sample_mnemonic
+);
+
+async function revealKey(
+  name: Names,
+  index: bigint,
+  proofs: Field,
+  password: string
+): Promise<string> {
+  // start !
+  console.log('\n[revealKey] init for %s', name);
+  // get account
+  const account = Accounts.get(name)!;
+  // is_activated?
+  const is_activated = account.isActivated.toBoolean();
+  if (!is_activated) {
+    console.log(
+      '\n[revealKey] %s account is (not) activated :',
+      name,
+      is_activated
+    );
+    throw 'nothing.';
+  }
+  // compare proofs && root
+  proofs.assertEquals(account.hash(), 'wrong proofs.');
+  // reveal key
+  const fieldPassword = CircuitString.fromString(password);
+  const decrypted = account.revealKey(fieldPassword, proofs);
+  return decrypted;
+}
+
+// test Bob again
+const revealedKey = await revealKey('Bob', 0n, bob_proofs, 'password123');
+console.log('revealed key: ', revealedKey);
+
+// shutdown MINA
 await shutdown();
