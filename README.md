@@ -1,6 +1,6 @@
-# Mina zkApp: 06 Ledger
+# Mina zkApp: 06-zkLedger
 
-This template uses TypeScript.
+An attempt to build on-chain && off-chain Ledger to secure wallets with a single MINA account.
 
 ## How to build
 
