@@ -1,139 +1,31 @@
 /// This was based on O(1) Lab sample of Leaderboard at :
 /// https://github.com/o1-labs/snarkyjs/blob/main/src/examples/zkapps/merkle_tree/merkle_zkapp.ts
 ///
-/// Similar mechanism but extending as a Token Ledger.
+/// Similar mechanism but extending as a on-chain/off-chain Ledger,
+/// that let user use only MINA account to access all added keys.
+///
 /// TODO:
-/// - Implement as ERC20 model.
+/// - Implement Add/Remove/Get methods to access encrypted ledger.
 ///
 import {
-  SmartContract,
-  state,
-  State,
-  Field,
-  Struct,
-  Poseidon,
-  method,
-  UInt64,
   MerkleTree,
-  MerkleWitness,
   Mina,
   isReady,
   shutdown,
-  PublicKey,
   PrivateKey,
-  DeployArgs,
-  Permissions,
   AccountUpdate,
-  Bool,
 } from 'snarkyjs';
 
 await isReady;
 console.log('SnarkyJS loaded.');
+// Wait till SnarkyJS is loaded before anything else.
 
-let doProofs = false; //true;
+import { Ledger } from './Ledger.js';
+import { Account } from './Account.js';
+import { Constant } from './Constant.js';
+import { NthMerkleWitness } from './NthMerkleWitness.js';
 
-// initial balance ?
-let initialPayerBalance = 1_000_000_000;
-const initialAccountBalance = UInt64.from(0); // zero
-
-class MyMerkleWitness extends MerkleWitness(8) {}
-
-class Account extends Struct({
-  publicKey: PublicKey,
-  token: UInt64,
-  isActivated: Bool,
-}) {
-  constructor(publicKey: PublicKey, token?: UInt64, isActivated?: Bool) {
-    super({
-      publicKey,
-      token: token || initialAccountBalance,
-      isActivated: isActivated || Bool.not(true),
-    });
-    this.publicKey = publicKey;
-    this.token = token || initialAccountBalance;
-    this.isActivated = isActivated || Bool.not(true);
-  }
-
-  hash(): Field {
-    return Poseidon.hash(
-      this.publicKey
-        .toFields()
-        .concat(this.token.toFields().concat(this.isActivated.toField()))
-    );
-  }
-  activate(): Account {
-    // console.log("[account] activate()");
-    if (this.isActivated.toBoolean()) {
-      console.log('account is already activated.');
-      return this;
-    }
-    // return new one.
-    // console.log('[account] activating new account...');
-    return new Account(this.publicKey, this.token, Bool.not(false));
-  }
-  balance(): bigint {
-    this.isActivated.assertEquals(true);
-    return this.token.toBigInt();
-  }
-  balance_increment(value: number): Account {
-    this.isActivated.assertEquals(true);
-    this.token.add(value);
-    // return new account instance with updated value
-    return new Account(this.publicKey, this.token.add(value), this.isActivated);
-  }
-  balance_decrement(value: number): Account {
-    this.isActivated.assertEquals(true);
-    // ensure amount > decreasing value
-    this.token.assertGte(UInt64.from(value), 'Balance is not enough.');
-    this.token.sub(value);
-    // return new account instance with updated value
-    return new Account(this.publicKey, this.token.sub(value), this.isActivated);
-  }
-}
-
-class Ledger extends SmartContract {
-  // a commitment is a cryptographic primitive allow us to commit data,
-  // but can be revealed later.
-  @state(Field) commitment = State<Field>();
-
-  deploy(args: DeployArgs) {
-    super.deploy(args);
-    this.setPermissions({
-      ...Permissions.default(),
-      editState: Permissions.proofOrSignature(),
-    });
-    // initial empty tree root
-    this.commitment.set(Field(0));
-    this.balance.addInPlace(UInt64.from(initialPayerBalance));
-  }
-
-  @method updateProofs(commitment: Field) {
-    // console.log('[Ledger] updateProofs()');
-    // fetch commitment
-    let lastest = this.commitment.get();
-    this.commitment.assertEquals(lastest);
-
-    // update new commitment
-    this.commitment.set(commitment);
-  }
-
-  @method activate(account: Account, root: Field, witness: MyMerkleWitness) {
-    // console.log('[Ledger] activateAccount()');
-    // fetch commitment
-    let commitment = this.commitment.get();
-    this.commitment.assertEquals(commitment);
-    // check if account is within our committed merkle tree
-    root.assertEquals(
-      commitment,
-      'Failed to activate account due to unmatched root.'
-    );
-    // activate account :
-    let updatedAccount = account.activate();
-    let newCommitment = witness.calculateRoot(updatedAccount.hash());
-
-    this.commitment.set(newCommitment);
-  }
-}
+let doProofs = false; //true
 
 type Names = 'Bob' | 'Alice' | 'Olivia' | 'Charlie';
 
@@ -182,7 +74,7 @@ if (doProofs) {
 
 const tx_deploy = await Mina.transaction(feePayer, () => {
   AccountUpdate.fundNewAccount(feePayer, {
-    initialBalance: initialPayerBalance,
+    initialBalance: Constant.initialPayerBalance,
   });
   zkLedger.deploy({ zkappKey: zkAppPrivatekey });
 });
@@ -209,9 +101,9 @@ async function activateAccount(name: Names, index: bigint) {
 
   const account = Accounts.get(name)!;
   const w = Tree.getWitness(index);
-  const witness = new MyMerkleWitness(w);
+  const witness = new NthMerkleWitness(w);
   const root = witness.calculateRoot(account.hash());
-  console.log('root: %s', root);
+  console.log('root: %s', root.toString().slice(0, 16));
 
   const tx = await Mina.transaction(feePayer, () => {
     zkLedger.activate(account, root, witness);
@@ -224,7 +116,7 @@ async function activateAccount(name: Names, index: bigint) {
   // fetch latest :
   const latestCommit = zkLedger.commitment.get();
   // logs :
-  console.log('proofs: %s', latestCommit.toString());
+  console.log('proofs: %s', latestCommit.toString().slice(0, 16));
 
   // update to off-chain ledger
   const updatedAccount = account.activate();
@@ -247,9 +139,8 @@ async function activateAccount(name: Names, index: bigint) {
 
 // Try Bob
 await activateAccount('Bob', 0n);
-await activateAccount('Bob', 0n);
-// await activateAccount('Alice', 1n);
-// await activateAccount('Olivia', 2n);
-// await activateAccount('Charlie', 3n);
+await activateAccount('Alice', 1n);
+await activateAccount('Olivia', 2n);
+await activateAccount('Charlie', 3n);
 
 await shutdown();
