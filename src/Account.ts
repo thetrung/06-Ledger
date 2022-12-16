@@ -6,12 +6,7 @@ import {
   Bool,
   CircuitString,
 } from 'snarkyjs';
-import {
-  encrypt_password,
-  encrypt_mnemonic,
-  decrypt_mnemonic,
-  init_vector,
-} from 'tezallet';
+import { encrypt_password, decrypt_mnemonic, init_vector } from 'tezallet';
 
 export class Account extends Struct({
   publicKey: PublicKey,
@@ -61,20 +56,12 @@ export class Account extends Struct({
     this.isActivated.assertFalse(
       '[Account/activate] account is already activated.'
     );
-    // encrypt 1-way password
-    const publicKey = this.publicKey.toFields().toString();
-    const encryptedPassword = encrypt_password(
-      password.toString(),
-      publicKey,
-      16
-    );
-    this.password = CircuitString.fromString(encryptedPassword);
-
     return new Account(
       this.publicKey,
       this.mnemonic,
-      this.password,
-      Bool.not(false)
+      password,
+      Bool.not(false),
+      this.vector
     );
   }
   v_buffer(): Buffer {
@@ -100,42 +87,24 @@ export class Account extends Struct({
     originHash.assertEquals(givenHash);
     password.assertEquals(this.password);
   }
-  setKey(
-    newKey: CircuitString,
-    password: CircuitString,
-    proofs: Field
-  ): Account {
+  setKey(newKey: CircuitString, password: CircuitString): Account {
     // is activated ?
     this.isActivated.assertTrue();
-    // length limitation ?
-    if (newKey.toString().length > 128) throw '128 characters or less.';
-    // verify password + proofs
-    const fieldPassword = this.encrypt(password);
-    this.verify(fieldPassword, proofs);
-    // encrypt new key
-    const fieldNewKey = CircuitString.fromString(
-      encrypt_mnemonic(
-        newKey.toString(),
-        fieldPassword.toString(),
-        this.v_buffer()
-      )
-    );
     // return new version :
     let newAccount = new Account(
       this.publicKey,
-      fieldNewKey,
-      this.password,
+      newKey,
+      password,
       this.isActivated,
       this.vector
     );
     return newAccount;
   }
-  revealKey(password: CircuitString, proofs: Field): string {
+  revealKey(password: CircuitString): string {
     // is activated ?
     this.isActivated.assertTrue();
     // encrypt password
     const fieldPassword = this.encrypt(password);
-    this.verify(fieldPassword, proofs);
     // reveal key
     const revealedKey = decrypt_mnemonic(
       this.mnemonic.toString(),

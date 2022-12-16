@@ -18,7 +18,7 @@ import {
   CircuitString,
 } from 'snarkyjs';
 
-import { generate_mnemonic } from 'tezallet';
+import { encrypt_mnemonic, generate_mnemonic } from 'tezallet';
 
 await isReady;
 console.log('SnarkyJS loaded.');
@@ -134,7 +134,7 @@ async function activateAccount(
   const root = witness.calculateRoot(account.hash());
   console.log('root: %s', root.toString().slice(0, 16));
   // password
-  const fieldPassword = CircuitString.fromString(password);
+  const fieldPassword = account.encrypt(CircuitString.fromString(password));
   // TX: activate()
   const tx = await Mina.transaction(feePayer, () => {
     zkLedger.activate(account, root, witness, fieldPassword);
@@ -173,32 +173,34 @@ async function setKey(
   console.log('\n[setKey] init for %s', name);
   // get account
   const account = Accounts.get(name)!;
-  // console.log('old key: %s', account.mnemonic.toString().slice(0, 16));
-  // // is_activated?
-  // const is_activated = account.isActivated.toBoolean();
-  // if (!is_activated) {
-  //   console.log(
-  //     '\n[setKey] %s account is (not) activated :',
-  //     name,
-  //     is_activated
-  //   );
-  //   return Field(0);
-  // }
+
   // witness & root
   const witness = new NthMerkleWitness(Tree.getWitness(index));
   const root = witness.calculateRoot(account.hash());
   console.log('root: %s', root.toString().slice(0, 16));
-  const fieldPassword = CircuitString.fromString(password);
-  const fieldNewKey = CircuitString.fromString(newKey);
+  // length limitation ?
+  if (newKey.toString().length > 128) throw '128 characters or less.';
+  // encrypt 1-way password
+  const fieldPassword = account.encrypt(CircuitString.fromString(password));
+  // verify password + proofs
+  account.verify(fieldPassword, proofs);
+  // encrypt new key
+  const fieldNewKey = CircuitString.fromString(
+    encrypt_mnemonic(
+      newKey.toString(),
+      fieldPassword.toString(),
+      account.v_buffer()
+    )
+  );
   // TX: setKey
   const tx = await Mina.transaction(feePayer, () => {
-    zkLedger.setKey(account, root, witness, proofs, fieldPassword, fieldNewKey);
+    zkLedger.setKey(account, root, witness, fieldPassword, fieldNewKey);
     if (!doProofs) zkLedger.sign(zkAppPrivatekey);
   });
   if (doProofs) await tx.prove();
   await tx.send();
   // update to off-chain instance
-  const updatedAccount = account.setKey(fieldNewKey, fieldPassword, proofs);
+  const updatedAccount = account.setKey(fieldNewKey, fieldPassword);
   updateOffChainAccount(name, updatedAccount, index, 'setKey');
   // log hash
   console.log('new key: %s', updatedAccount.mnemonic.toString().slice(0, 16));
@@ -207,6 +209,13 @@ async function setKey(
 }
 
 const sample_mnemonic = generate_mnemonic();
+bob_proofs = await setKey(
+  'Bob',
+  0n,
+  bob_proofs,
+  'password123',
+  sample_mnemonic
+);
 bob_proofs = await setKey(
   'Bob',
   0n,
@@ -239,7 +248,9 @@ async function revealKey(
   proofs.assertEquals(account.hash(), 'wrong proofs.');
   // reveal key
   const fieldPassword = CircuitString.fromString(password);
-  const decrypted = account.revealKey(fieldPassword, proofs);
+  const encryptedPassword = account.encrypt(fieldPassword);
+  account.verify(encryptedPassword, proofs);
+  const decrypted = account.revealKey(fieldPassword);
   return decrypted;
 }
 

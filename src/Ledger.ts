@@ -81,7 +81,6 @@ export class Ledger extends SmartContract {
     account: Account,
     root: Field,
     witness: NthMerkleWitness,
-    proofs: Field,
     password: CircuitString,
     newKey: CircuitString
   ) {
@@ -91,7 +90,7 @@ export class Ledger extends SmartContract {
     // check if account is within our committed merkle tree
     root.assertEquals(commitment, 'Unmatched proofs to set new key.');
     // set account new key :
-    const updatedAccount = account.setKey(newKey, password, proofs);
+    const updatedAccount = account.setKey(newKey, password);
     const newCommitment = witness.calculateRoot(updatedAccount.hash());
     // commit change :
     this.commitment.set(newCommitment);
