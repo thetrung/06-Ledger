@@ -173,17 +173,17 @@ async function setKey(
   console.log('\n[setKey] init for %s', name);
   // get account
   const account = Accounts.get(name)!;
-  console.log('old key: %s', account.mnemonic.toString().slice(0, 16));
-  // is_activated?
-  const is_activated = account.isActivated.toBoolean();
-  if (!is_activated) {
-    console.log(
-      '\n[setKey] %s account is (not) activated :',
-      name,
-      is_activated
-    );
-    return Field(0);
-  }
+  // console.log('old key: %s', account.mnemonic.toString().slice(0, 16));
+  // // is_activated?
+  // const is_activated = account.isActivated.toBoolean();
+  // if (!is_activated) {
+  //   console.log(
+  //     '\n[setKey] %s account is (not) activated :',
+  //     name,
+  //     is_activated
+  //   );
+  //   return Field(0);
+  // }
   // witness & root
   const witness = new NthMerkleWitness(Tree.getWitness(index));
   const root = witness.calculateRoot(account.hash());

@@ -58,10 +58,9 @@ export class Account extends Struct({
   }
 
   activate(password: CircuitString): Account {
-    if (this.isActivated.toBoolean()) {
-      console.log('[Account/activate] account is already activated.');
-      return this;
-    }
+    this.isActivated.assertFalse(
+      '[Account/activate] account is already activated.'
+    );
     // encrypt 1-way password
     const publicKey = this.publicKey.toFields().toString();
     const encryptedPassword = encrypt_password(
