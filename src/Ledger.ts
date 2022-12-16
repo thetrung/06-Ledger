@@ -4,14 +4,12 @@ import {
   State,
   Field,
   method,
-  UInt64,
   DeployArgs,
   Permissions,
   CircuitString,
 } from 'snarkyjs';
 
 import { Account } from './Account.js';
-import { Constant } from './Constant.js';
 import { NthMerkleWitness } from './NthMerkleWitness.js';
 
 export class Ledger extends SmartContract {
@@ -27,7 +25,6 @@ export class Ledger extends SmartContract {
     });
     // initial empty tree root
     this.commitment.set(Field(0));
-    this.balance.addInPlace(UInt64.from(Constant.initialPayerBalance));
   }
 
   /**

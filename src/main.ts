@@ -26,7 +26,6 @@ console.log('SnarkyJS loaded.');
 
 import { Ledger } from './Ledger.js';
 import { Account } from './Account.js';
-import { Constant } from './Constant.js';
 import { NthMerkleWitness } from './NthMerkleWitness.js';
 
 let doProofs = false; //true
@@ -77,9 +76,7 @@ if (doProofs) {
 }
 
 const tx_deploy = await Mina.transaction(feePayer, () => {
-  AccountUpdate.fundNewAccount(feePayer, {
-    initialBalance: Constant.initialPayerBalance,
-  });
+  AccountUpdate.fundNewAccount(feePayer);
   zkLedger.deploy({ zkappKey: zkAppPrivatekey });
 });
 await tx_deploy.send();
