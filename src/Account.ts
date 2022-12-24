@@ -22,10 +22,10 @@ export class Account extends Struct({
     isActivated?: Bool,
     vector?: CircuitString
   ) {
+    const _v = init_vector().toString('base64');
+    console.log(_v);
     const empty_circle = CircuitString.fromString('');
-    const vector_init = CircuitString.fromString(
-      init_vector().toString('base64')
-    );
+    const vector_init = CircuitString.fromString(_v);
     super({
       publicKey,
       vector: vector || vector_init,

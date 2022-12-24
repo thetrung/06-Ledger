@@ -18,7 +18,10 @@ import {
   CircuitString,
 } from 'snarkyjs';
 
-import { encrypt_mnemonic, generate_mnemonic } from 'tezallet';
+// IPFS
+// import * as IPFS from 'ipfs-core';
+
+import { encrypt_mnemonic, generate_mnemonic, encrypt_data } from 'tezallet';
 
 await isReady;
 console.log('SnarkyJS loaded.');
@@ -62,11 +65,29 @@ Tree.setLeaf(1n, alice.hash());
 Tree.setLeaf(2n, olivia.hash());
 Tree.setLeaf(3n, charlie.hash());
 
+/* new data type :
+ *
+ *
+ * AccountStorage :
+ * secret_1 * encrypted([12]ids)
+ *
+ * Segments :
+ * ids * encrypted(public_ipfs_address)
+ */
+
+const shortenHash = (str: string, amount = 4): string => {
+  const length = str.length;
+  return str
+    .slice(0, amount)
+    .concat('...')
+    .concat(str.slice(length - amount, length));
+};
+
 // get commitment for smart contract
 const initialOffChainProofs = Tree.getRoot();
 console.log(
   'initial off-chain proofs :\n%s\n',
-  initialOffChainProofs.toString().slice(0, 16)
+  shortenHash(initialOffChainProofs.toString())
 );
 
 let zkLedger = new Ledger(zkAppAddress);
@@ -91,7 +112,7 @@ const tx_initProofs = await Mina.transaction(feePayer, () => {
 if (doProofs) await tx_initProofs.prove();
 await tx_initProofs.send();
 console.log('[Ledger] updated latest proofs.');
-console.log('root: %s\n', zkLedger.commitment.get().toString().slice(0, 16));
+console.log('root: %s\n', shortenHash(zkLedger.commitment.get().toString()));
 
 async function updateOffChainAccount(
   name: string,
@@ -101,7 +122,7 @@ async function updateOffChainAccount(
 ) {
   // fetch latest :
   const latestCommit = zkLedger.commitment.get();
-  console.log('proofs: %s', latestCommit.toString().slice(0, 16));
+  console.log('account proofs: %s', shortenHash(latestCommit.toString()));
 
   // update to off-chain ledger
   const updatedAccountHash = updatedAccount.hash();
@@ -129,7 +150,6 @@ async function activateAccount(
   // witness & root
   const witness = new NthMerkleWitness(Tree.getWitness(index));
   const root = witness.calculateRoot(account.hash());
-  console.log('root: %s', root.toString().slice(0, 16));
   // password
   const fieldPassword = account.encrypt(CircuitString.fromString(password));
   // TX: activate()
@@ -167,28 +187,47 @@ async function setKey(
   newKey: string
 ): Promise<Field> {
   // start !
-  console.log('\n[setKey] init for %s', name);
+  console.log('\n[setKey] for %s', name);
   // get account
   const account = Accounts.get(name)!;
 
   // witness & root
   const witness = new NthMerkleWitness(Tree.getWitness(index));
   const root = witness.calculateRoot(account.hash());
-  console.log('root: %s', root.toString().slice(0, 16));
+  console.log('root: %s', shortenHash(root.toString()));
+  console.log(newKey.toString());
   // length limitation ?
-  if (newKey.toString().length > 128) throw '128 characters or less.';
+  // if (newKey.toString().length > 128) throw '128 characters or less.';
   // encrypt 1-way password
   const fieldPassword = account.encrypt(CircuitString.fromString(password));
   // verify password + proofs
   account.verify(fieldPassword, proofs);
   // encrypt new key
-  const fieldNewKey = CircuitString.fromString(
-    encrypt_mnemonic(
-      newKey.toString(),
+  const encryptedNewKey = encrypt_mnemonic(
+    newKey.toString(),
+    fieldPassword.toString(),
+    account.v_buffer()
+  );
+  // log hash
+  const str = encryptedNewKey.toString();
+  console.log('[newKey](%d Bytes)', str.length, str);
+
+  console.log('\n');
+  const SEGMENT_AMOUNT = 12;
+  const size = str.length / SEGMENT_AMOUNT;
+  for (let i = 0; i < SEGMENT_AMOUNT; i++) {
+    const slice = str.slice(i * size, (i + 1) * size);
+    const encrypted_slice = encrypt_data(
+      slice,
       fieldPassword.toString(),
       account.v_buffer()
-    )
-  );
+    );
+    console.log('%d.%s => %s', i + 1, slice, encrypted_slice);
+  }
+
+  // export
+  const fieldNewKey = CircuitString.fromString(encryptedNewKey);
+
   // TX: setKey
   const tx = await Mina.transaction(feePayer, () => {
     zkLedger.setKey(account, root, witness, fieldPassword, fieldNewKey);
@@ -196,30 +235,29 @@ async function setKey(
   });
   if (doProofs) await tx.prove();
   await tx.send();
+
   // update to off-chain instance
   const updatedAccount = account.setKey(fieldNewKey, fieldPassword);
   updateOffChainAccount(name, updatedAccount, index, 'setKey');
-  // log hash
-  console.log('new key: %s', updatedAccount.mnemonic.toString().slice(0, 16));
+
   // return for testing
   return updatedAccount.hash();
 }
 
-const sample_mnemonic = generate_mnemonic();
 bob_proofs = await setKey(
   'Bob',
   0n,
   bob_proofs,
   'password123',
-  sample_mnemonic
+  generate_mnemonic(128) // 128 = 12 words
 );
-bob_proofs = await setKey(
-  'Bob',
-  0n,
-  bob_proofs,
-  'password123',
-  sample_mnemonic
-);
+// bob_proofs = await setKey(
+//   'Bob',
+//   0n,
+//   bob_proofs,
+//   'password123',
+//   generate_mnemonic()
+// );
 
 async function revealKey(
   name: Names,
@@ -228,7 +266,7 @@ async function revealKey(
   password: string
 ): Promise<string> {
   // start !
-  console.log('\n[revealKey] init for %s', name);
+  console.log('\n[revealKey] for %s', name);
   // get account
   const account = Accounts.get(name)!;
   // is_activated?
@@ -253,7 +291,7 @@ async function revealKey(
 
 // test Bob again
 const revealedKey = await revealKey('Bob', 0n, bob_proofs, 'password123');
-console.log('revealed key: ', revealedKey);
+console.log('decrypted: ', revealedKey);
 
 // shutdown MINA
 await shutdown();
